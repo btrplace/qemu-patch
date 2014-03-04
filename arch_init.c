@@ -51,6 +51,7 @@
 #include "exec/ram_addr.h"
 #include "hw/acpi/acpi.h"
 #include "qemu/host-utils.h"
+#include "qemu/thread.h"
 
 #ifdef DEBUG_ARCH_INIT
 #define DPRINTF(fmt, ...) \
@@ -283,6 +284,7 @@ static unsigned long *migration_bitmap;
 static uint64_t migration_dirty_pages;
 static uint32_t last_version;
 static bool ram_bulk_stage;
+static QemuDirtyPages qdp;
 
 /* Update the xbzrle cache to reflect a page that's been sent as all 0.
  * The important thing is that a stale (not-yet-0'd) page be replaced
@@ -1311,4 +1313,176 @@ static void check_guest_throttling(void)
         mig_throttle_guest_down();
         t0 = t1;
     }
+}
+
+static void *dirty_thread(void *opaque)
+{
+    RAMBlock *block;
+    int64_t ram_pages = last_ram_offset() >> TARGET_PAGE_BITS;
+    uint64_t num_dirty_pages_init;
+    static int64_t num_dirty_pages_period;
+    static int64_t start_time;
+    int64_t end_time;
+    int64_t dirty_pages_rate, dirty_bytes_rate;
+    bool first_time = 1;
+    int i = 0;
+
+    // Create the output file
+    FILE *fp = fopen(qdp.file, "wb+");
+
+    // Start dirty logging
+    qemu_mutex_lock_ramlist();
+    qemu_mutex_lock_iothread();
+    memory_global_dirty_log_start();
+    qemu_mutex_unlock_iothread();
+    qemu_mutex_unlock_ramlist();
+
+    // Init an empty bitmap
+    migration_bitmap = bitmap_new(ram_pages);
+    bitmap_clear(migration_bitmap, 0, ram_pages);
+    migration_dirty_pages = 0;
+
+    while (1) {
+
+        // Lock iothread + ramlist
+        qemu_mutex_lock_iothread();
+        qemu_mutex_lock_ramlist();
+
+        // Store the last dirty pages count
+        num_dirty_pages_init = migration_dirty_pages;
+
+        // Sync dirty bitmap
+        trace_migration_bitmap_sync_start();
+        address_space_sync_dirty_bitmap(&address_space_memory);
+        QTAILQ_FOREACH(block, &ram_list.blocks, next) {
+            migration_bitmap_sync_range(block->mr->ram_addr, block->length);
+        }
+        trace_migration_bitmap_sync_end(migration_dirty_pages -
+                                        num_dirty_pages_init);
+
+        // Count updated dirty pages
+        num_dirty_pages_period += migration_dirty_pages - num_dirty_pages_init;
+
+        // Get stop time
+        end_time = qemu_clock_get_ms(QEMU_CLOCK_REALTIME);
+
+        // Ignore the first sync (all pages dirty)
+        if (first_time) {
+            bitmap_clear(migration_bitmap, 0, ram_pages);
+            migration_dirty_pages = 0;
+            num_dirty_pages_period = 0;
+            start_time = end_time;
+            first_time = 0;
+            i = 0;
+        }
+        else {
+            if (qdp.clear) {
+                fprintf(fp, "Round:%d,freq:%" PRIu64 ",pages:%" PRIu64
+                            ",bytes:%" PRIu64 "\n", i, qdp.freq,
+                            migration_dirty_pages, (migration_dirty_pages *
+                            TARGET_PAGE_SIZE));
+                bitmap_clear(migration_bitmap, 0, ram_pages);
+                migration_dirty_pages = 0;
+            }
+            else {
+                fprintf(fp, "Round:%d,total_time:%" PRIu64 ",total_pages:%"
+                            PRIu64 ",total_bytes:%" PRIu64 "\n", i,
+                            (end_time - start_time), num_dirty_pages_period,
+                            (num_dirty_pages_period * TARGET_PAGE_SIZE));
+            }
+        }
+
+        // The delay is reached
+        //if (end_time >= start_time + qdp.delay) {
+        if (i*qdp.freq >= qdp.delay) {
+
+            // Show the rate only if delay > 1s
+            if (qdp.delay >= 1000) {
+                // Calculate the rate
+                dirty_pages_rate = num_dirty_pages_period * 1000 /
+                                    (end_time - start_time);
+                dirty_bytes_rate = dirty_pages_rate * TARGET_PAGE_SIZE;
+
+                fprintf(fp, "Rate,pages:%" PRIu64 ",bytes:%" PRIu64 "\n",
+                            dirty_pages_rate, dirty_bytes_rate);
+            }
+
+            // Unlock ramlist and iothread before exit
+            qemu_mutex_unlock_iothread();
+            qemu_mutex_unlock_ramlist();
+
+            break;
+        }
+
+        // Unlock ramlist and iothread
+        qemu_mutex_unlock_iothread();
+        qemu_mutex_unlock_ramlist();
+
+        // Sleep
+        g_usleep(qdp.freq*1000);
+
+        i++;
+    }
+
+    // Close the output file
+    fclose(fp);
+
+    // Stop dirty logging
+    qemu_mutex_lock_iothread();
+    qemu_mutex_lock_ramlist();
+    memory_global_dirty_log_stop();
+    qemu_mutex_unlock_ramlist();
+    qemu_mutex_unlock_iothread();
+
+    // Freeing bitmap
+    g_free(migration_bitmap);
+    migration_bitmap = NULL;
+
+    return NULL;
+}
+
+QemuDirtyPages *qmp_query_dirty_pages(const char* file, int64_t freq,
+                                    bool has_delay, int64_t delay,
+                                    bool has_clear, bool clear, Error **errp)
+{
+    // Init output struct
+    QemuDirtyPages *s;
+    s = g_malloc0(sizeof(*s));
+
+    // Try to create the output file
+    FILE *fp = fopen(file, "wb+");
+    if (fp == NULL) {
+        s->file = strdup("ERROR");
+        return s;
+    }
+    else {
+        fclose(fp);
+        fp = NULL;
+    }
+
+    // Fill the struct with qmp params
+    s->file = strdup(file);
+    s->freq = freq;
+    if (has_delay) {
+        s->delay = delay;
+    }
+    else {
+        s->delay = freq;
+    }
+    if (has_clear) {
+        s->clear = clear;
+    }
+    else {
+        s->clear = 1;
+    }
+
+    // Set the global struct
+    qdp = *s;
+    qdp.file = strdup(file);
+
+    // Launch dirty_thread
+    QemuThread thread;
+    qemu_thread_create(&thread, dirty_thread, NULL, QEMU_THREAD_DETACHED);
+
+    return s;
 }

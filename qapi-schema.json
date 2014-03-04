@@ -4519,3 +4519,16 @@
 # Since: 1.7
 ##
 { 'command': 'blockdev-add', 'data': { 'options': 'BlockdevOptions' } }
+
+##
+# QemuDirtyPages type which contain dirty pages query informations
+##
+{ 'type': 'QemuDirtyPages',
+  'data': { 'file': 'str', 'freq': 'int', 'delay': 'int', 'clear' : 'bool' } }
+
+##
+# Get dirty pages informations
+##
+{ 'command': 'query-dirty-pages',
+  'data' : { 'file': 'str', 'freq': 'int','*delay': 'int', '*clear': 'bool' },
+  'returns': 'QemuDirtyPages' }

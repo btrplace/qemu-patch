@@ -3498,3 +3498,13 @@ Example:
                    } } ] }
 
 EQMP
+
+{
+	.name = "query-dirty-pages",
+	.args_type = "file:s,freq:i,delay:i?,clear:b?",
+	.mhandler.cmd_new = qmp_marshal_input_query_dirty_pages,
+},
+SQMP
+query-dirty-pages
+
+EQMP
