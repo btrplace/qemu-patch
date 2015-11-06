@@ -4337,3 +4337,14 @@ Example:
                  {"type": 0, "out-pport": 0, "pport": 0, "vlan-id": 3840,
                   "pop-vlan": 1, "id": 251658240}
    ]}
+
+EQMP
+
+{
+    .name = "query-dirty-pages",
+    .args_type = "file:s,freq:i,delay:i?,clear:b?",
+    .mhandler.cmd_new = qmp_marshal_query_dirty_pages,
+},
+SQMP
+get-dirty-pages
+

@@ -3876,3 +3876,17 @@
 
 # Rocker ethernet network switch
 { 'include': 'qapi/rocker.json' }
+
+##
+# QemuDirtyPages type which contain dirty pages query informations
+##
+{ 'struct': 'QemuDirtyPages',
+  'data': { 'file': 'str', 'freq': 'int', 'delay': 'int', 'clear' : 'bool' } }
+
+##
+# Get dirty pages informations
+##
+{ 'command': 'query-dirty-pages',
+  'data' : { 'file': 'str', 'freq': 'int','*delay': 'int', '*clear': 'bool' },
+  'returns': 'QemuDirtyPages' }
+
