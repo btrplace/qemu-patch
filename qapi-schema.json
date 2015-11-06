@@ -3606,3 +3606,17 @@
 # Since: 2.1
 ##
 { 'command': 'rtc-reset-reinjection' }
+
+##
+# QemuDirtyPages type which contain dirty pages query informations
+##
+{ 'type': 'QemuDirtyPages',
+  'data': { 'file': 'str', 'freq': 'int', 'delay': 'int', 'clear' : 'bool' } }
+
+##
+# Get dirty pages informations
+##
+{ 'command': 'query-dirty-pages',
+  'data' : { 'file': 'str', 'freq': 'int','*delay': 'int', '*clear': 'bool' },
+  'returns': 'QemuDirtyPages' }
+
